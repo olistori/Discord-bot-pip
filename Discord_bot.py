@@ -38,6 +38,7 @@ audio_source = FFmpegPCMAudio('audio_file.mp3', **ffmpeg_options)
 
 # Global variable to store the queued songs
 queued_songs = []
+voice_client = ""
 
 # Function to search YouTube for videos
 async def search_youtube(query):
@@ -52,11 +53,6 @@ async def search_youtube(query):
         })
     return videos
 
-# Function to play a video
-async def play_video(ctx, video_url):
-    channel = ctx.author.voice.channel
-    voice_client = await channel.connect()
-    voice_client.play(discord.FFmpegPCMAudio(video_url))
 
 # Function to play a Spotify track
 async def play_spotify(ctx, track_id):
@@ -97,9 +93,18 @@ async def join(ctx):
         return
 
     # Join the voice channel of the author of the command
-    channel = ctx.author.voice.channel
-    await channel.connect()
+    if ctx.voice_client is None:
+        channel = ctx.author.voice.channel
+        voice_client = await channel.connect()
+        return voice_client
 
+    ctx.voice_client.source = discord.FFmpegPCMAudio('audio_file.mp3', **ffmpeg_options)
+    
+
+# Function to play a video
+async def play_video(ctx, video_url):
+    voice_client = await join(ctx)
+    voice_client.play(discord.FFmpegPCMAudio(video_url))
 
 
 # Command to leave voice channel
