@@ -35,6 +35,7 @@ ydl_opts = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
+    'noplaylist': True  # Prevent downloading playlists
 }
 
 ffmpeg_options = {
