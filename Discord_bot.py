@@ -47,6 +47,7 @@ ffmpeg_options = {
 # Global variable to store the queued songs
 queued_songs = []
 voice_client = None
+currently_playing = ""
 
 # Function to search YouTube for queued_songs
 async def search_youtube(ctx, query):
@@ -90,20 +91,16 @@ async def search_youtube(ctx, query):
 
     # Append the selected YouTube URL to the queued_songs list
     selected_item = data['items'][selected_number - 1]
-    queued_songs.append(f'https://www.youtube.com/watch?v={selected_item['id']['videoId']}')
-
-
-# Function to play a Spotify track
-async def play_spotify(ctx, track_id):
-    track = spotify.track(track_id)
-    if 'preview_url' in track and track['preview_url'] is not None:
-        await play_video(ctx, track['preview_url'])
-    else:
-        await ctx.send("This track does not have a preview available.")
+    print(selected_item)
+    track = []
+    track.append(f'https://www.youtube.com/watch?v={selected_item['id']['videoId']}')
+    track.append(selected_item['snippet']['title'])
+    queued_songs.append(track)
 
 # Function to play the next song in the queue
 async def play_next(ctx):
     global queued_songs
+    global currently_playing
     if not queued_songs:
         await ctx.send("The queue is empty.")
         if ctx.voice_client.is_connected():
@@ -112,6 +109,7 @@ async def play_next(ctx):
 
     # Get the next song from the queue
     next_song = queued_songs.pop(0)
+    currently_playing = next_song[1]
 
     # Join voice channel if not already in one
     if ctx.voice_client is None or not ctx.voice_client.is_connected():
@@ -119,9 +117,9 @@ async def play_next(ctx):
 
 
     # Check if the next song is a YouTube URL or a Spotify track ID
-    if "youtube.com" in next_song or "youtu.be" in next_song:
+    if "youtube.com" in next_song[0] or "youtu.be" in next_song[0]:
         with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(next_song, download=False)
+            info = ydl.extract_info(next_song[0], download=False)
             # Filter formats to get audio-only formats
             audio_formats = [f for f in info['formats'] if 'acodec' in f and f['acodec'] != 'none']
             # Sort the formats by bitrate
@@ -129,40 +127,16 @@ async def play_next(ctx):
             # Get the URL of the highest bitrate audio stream
             audio_url = sorted_audio_formats[0]['url'] if sorted_audio_formats else None
 
-            info_dict = ydl.extract_info(next_song, download=False)
-            video_title = info_dict.get('title', None)
-            await ctx.send(f'Now playing: {video_title}')
+            await ctx.send(f'Now playing: {next_song[1]}')
 
         await play_video(ctx, audio_url)
     else:
-        track_id = next_song.split("/")[-1]
-
-        await play_spotify(ctx, next_song)
+        await ctx.send(f'Now playing a preview of: {next_song[1]}')
+        await play_spotify(ctx, next_song[0])
 
 async def play_spotify(ctx, track_id):
-    global queued_songs
-    track = spotify.track(track_id)
-    if 'preview_url' in track and track['preview_url'] is not None:
-        await ctx.send("This track is only a preview. Do you want to search the full song on Youtube? (yes/no)")
-        
-        def check_response(msg):
-            return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
-        
-        try:
-            response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
-            if response_msg.content.lower() == 'yes':
-                # Play the full song
-                await play(ctx, query=track['name'])
-            else:
-                await ctx.send(f'Okay, playing a preview of {track['name']}.')
-                # Play the preview
-                await play_video(ctx, track['preview_url'])
-        except asyncio.TimeoutError:
-            await ctx.send("You took too long to respond. Playing the preview.")
-            # Play the preview by default if no response is received
-            await play_video(ctx, track['preview_url'])
-    else:
-        await play(ctx, query=track['name'])
+    await play_video(ctx, track_id)
+ 
 
 @bot.command()
 async def join(ctx):
@@ -231,7 +205,16 @@ async def play(ctx, *, query):
             except asyncio.TimeoutError:
                 await ctx.send("You took too long to respond. Adding only the first song from the playlist to the queue.")
 
-        queued_songs.append(query)
+            return
+
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(query, download=False)
+            video_title = info_dict.get('title', None)
+        track = []
+        track.append(query)
+        track.append(video_title)
+        queued_songs.append(track)
+
         if voice_client.is_playing():
             await ctx.send("Song added to queue.")
         # If the bot is not currently playing, play the next song
@@ -241,7 +224,38 @@ async def play(ctx, *, query):
 
     # Check if the provided query is a Spotify track URL
     if "open.spotify.com" in query:
-        queued_songs.append(query)
+        track = spotify.track(query)
+        if 'preview_url' in track and track['preview_url'] is not None:
+            await ctx.send("This track is only a preview. Do you want to search the full song on Youtube? (yes/no)")
+            
+            def check_response(msg):
+                return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
+            
+            try:
+                response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
+                if response_msg.content.lower() == 'yes':
+                    # Play the full song
+                    await play(ctx, query=track['name'])
+                    return
+                else:
+                    await ctx.send(f'Okay, a preview of {track['name']} will be played.')
+                    # Play the preview
+                    trackls = []
+                    trackls.append(track['preview_url'])
+                    await ctx.send(f'{track['name']} - {track['artists'][0]['name']}')
+                    trackls.append(f'{track['name']} - {track['artists'][0]['name']}')
+                    queued_songs.append(trackls)
+            except asyncio.TimeoutError:
+                await ctx.send("You took too long to respond. Playing the preview.")
+                # Play the preview by default if no response is received
+                trackls = []
+                trackls.append(track['preview_url'])
+                trackls.append(f'{track['name']} - {track['artists']}')
+                queued_songs.append(trackls)
+        else:
+            await play(ctx, query=track['name'])
+            return
+
         if voice_client.is_playing():
             await ctx.send("Song added to queue.")
         # If the bot is not currently playing, play the next song
@@ -264,32 +278,38 @@ async def play(ctx, *, query):
         await ctx.send("Song added to queue.")
 
 async def extract_playlist_items(playlist_url, ctx, voice_client, max_dl):
+    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+        info_dict = ydl.extract_info(playlist_url, download=False)
+        video_title = info_dict.get('title', None)
+    track = []
+    track.append(playlist_url)
+    track.append(video_title)
+    queued_songs.append(track)
+
+    if not ctx.voice_client.is_playing():
+            await play_next(ctx)
     playlist_items = []
     try:
-        await ctx.send(f'This is a YouTube playlist. Downloading information needed.')
+        await ctx.send(f'This is a YouTube playlist. Downloading information needed for the rest of the songs.')
         ydl_opts_playlist = {
             #'quiet': True,
             'skip_download': True,
             'force_generic_extractor': True,
             'dump_single_json': True,  # Dump info for each video in JSON format
-            'playlist_items': f'1-{max_dl}'  # Set x to the maximum number of songs you want to fetch
+            'playlist_items': f'2-{max_dl}'  # Set x to the maximum number of songs you want to fetch
         }
         ydl = youtube_dl.YoutubeDL(ydl_opts_playlist)
         info = ydl.extract_info(playlist_url, download=False)
         if 'entries' in info:
             for entry in info['entries']:
                 if entry:
-                    playlist_items.append(f"https://www.youtube.com/watch?v={entry['id']}")
-                    print(entry['title'])
-            queued_songs.extend(playlist_items)
+                    track = []
+                    track.append(f"https://www.youtube.com/watch?v={entry['id']}")
+                    track.append(entry['title'])
+                    queued_songs.append(track)
 
             await ctx.send(f"{len(info['entries'])} songs from the playlist have been added to the queue.")
 
-        if voice_client.is_playing():
-            await ctx.send("Song added to queue.")
-        # If the bot is not currently playing, play the next song
-        if not ctx.voice_client.is_playing():
-            await play_next(ctx)
     except Exception as e:
         print(f"Error extracting playlist items: {e}")
 
@@ -342,14 +362,13 @@ async def queue(ctx):
     if queued_songs:
         name_queue = []
         count = 1
+        await ctx.send(f'Currently Playing: {currently_playing}')
         await ctx.send(f'The queue contains {len(queued_songs)}')
-        await ctx.send(f'Fetching data about the songs.')
+
         for song in queued_songs:
-            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(song, download=False)
-                video_title = info_dict.get('title', None)
-                name_queue.append(f'{count}. {video_title}')
+            name_queue.append(f'{count}. {song[1]}')
             count = count+1
+
         list_as_string = '\n'.join(name_queue)
         await ctx.send(list_as_string)
     else:
@@ -360,25 +379,17 @@ async def songs(ctx):
     if queued_songs:
         name_queue = []
         count = 1
+        await ctx.send(f'Currently Playing: {currently_playing}')
         await ctx.send(f'The queue contains {len(queued_songs)}')
-        await ctx.send(f'Fetching data about the songs.')
+
         for song in queued_songs:
-            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-                info_dict = ydl.extract_info(song, download=False)
-                video_title = info_dict.get('title', None)
-                name_queue.append(f'{count}. {video_title}')
+            name_queue.append(f'{count}. {song[1]}')
             count = count+1
+
         list_as_string = '\n'.join(name_queue)
         await ctx.send(list_as_string)
     else:
         await ctx.send("The queue is empty!")
-
-
-
-
-
-
-
 
 
 
