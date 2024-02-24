@@ -35,7 +35,7 @@ ydl_opts = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
-    #'noplaylist': True  # Prevent downloading playlists
+    'noplaylist': True  # Prevent downloading playlists
 }
 
 ffmpeg_options = {
@@ -205,8 +205,22 @@ async def play(ctx, *, query):
     # Check if the provided query is a YouTube URL
     if "youtube.com" in query or "youtu.be" in query:
         if "&list=" in query:  # Check if it's a playlist
-            await extract_playlist_items(query, ctx, voice_client)
-            return
+            await ctx.send(f'This is a YouTube playlist. It might contain alot of songs. Do you want to add them all to the queue (yes/no)')
+
+            def check_response(msg):
+                return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
+
+            try:
+                response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
+                if response_msg.content.lower() == 'yes':    
+                    await extract_playlist_items(query, ctx, voice_client)
+                    return
+                else:
+                    # Add only the first song
+                    await ctx.send("Only first song from the playlist added to the queue.")
+            except asyncio.TimeoutError:
+                await ctx.send("You took too long to respond. Adding only the first song from the playlist to the queue.")
+
         queued_songs.append(query)
         if voice_client.is_playing():
             await ctx.send("Song added to queue.")
@@ -295,8 +309,6 @@ async def skip(ctx):
     voice_client.stop()
     await ctx.send("Skipping to next song.")
 
-    await play_next(ctx)
-
 
 # Command to stop playback and clear queue
 @bot.command()
@@ -318,17 +330,21 @@ async def leave(ctx):
 
 @bot.command()
 async def queue(ctx):
-    name_queue = []
-    count = 1
-    await ctx.send(f'Fetching data.')
-    for song in queued_songs:
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info_dict = ydl.extract_info(song, download=False)
-            video_title = info_dict.get('title', None)
-            name_queue.append(f'{count}. {video_title}')
-        count = count+1
-    list_as_string = '\n'.join(name_queue)
-    await ctx.send(list_as_string)
+    if queued_songs:
+        name_queue = []
+        count = 1
+        await ctx.send(f'The queue contains {len(queued_songs)}')
+        await ctx.send(f'Fetching data about the songs.')
+        for song in queued_songs:
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(song, download=False)
+                video_title = info_dict.get('title', None)
+                name_queue.append(f'{count}. {video_title}')
+            count = count+1
+        list_as_string = '\n'.join(name_queue)
+        await ctx.send(list_as_string)
+    else:
+        await ctx.send("The queue is empty!")
 
 
 
