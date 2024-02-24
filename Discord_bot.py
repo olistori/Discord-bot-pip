@@ -205,16 +205,26 @@ async def play(ctx, *, query):
     # Check if the provided query is a YouTube URL
     if "youtube.com" in query or "youtu.be" in query:
         if "&list=" in query:  # Check if it's a playlist
-            await ctx.send(f'This is a YouTube playlist. It might contain alot of songs. Do you want to add them all to the queue (yes/no)')
+            await ctx.send(f'This is a YouTube playlist. It might contain alot of songs. Do you want to add them to the queue (yes/no)')
 
             def check_response(msg):
                 return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
 
             try:
                 response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
-                if response_msg.content.lower() == 'yes':    
-                    await extract_playlist_items(query, ctx, voice_client)
-                    return
+                if response_msg.content.lower() == 'yes':  
+                    await ctx.send("Whats the max songs you want to add, Please select a number from 2 to 50:")
+    
+                    def check(msg):
+                        return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.isdigit() and 2 <= int(msg.content) <= 50
+
+                    try:
+                        msg = await bot.wait_for('message', timeout=30.0, check=check)
+                        await extract_playlist_items(query, ctx, voice_client, msg.content)
+                    except asyncio.TimeoutError:
+                        await ctx.send("You took too long to respond. Only first song from the playlist added to the queue.")
+                    except ValueError:
+                        await ctx.send("Invalid input. Please enter a number from 2 to 50. Only first song from the playlist added to the queue")
                 else:
                     # Add only the first song
                     await ctx.send("Only first song from the playlist added to the queue.")
@@ -253,7 +263,7 @@ async def play(ctx, *, query):
     else:
         await ctx.send("Song added to queue.")
 
-async def extract_playlist_items(playlist_url, ctx, voice_client):
+async def extract_playlist_items(playlist_url, ctx, voice_client, max_dl):
     playlist_items = []
     try:
         await ctx.send(f'This is a YouTube playlist. Downloading information needed.')
@@ -262,31 +272,18 @@ async def extract_playlist_items(playlist_url, ctx, voice_client):
             'skip_download': True,
             'force_generic_extractor': True,
             'dump_single_json': True,  # Dump info for each video in JSON format
+            'playlist_items': f'1-{max_dl}'  # Set x to the maximum number of songs you want to fetch
         }
         ydl = youtube_dl.YoutubeDL(ydl_opts_playlist)
         info = ydl.extract_info(playlist_url, download=False)
         if 'entries' in info:
-            await ctx.send(f'This is a YouTube playlist. Do you want to add {len(info['entries'])} songs to the queue? (yes/no)')
+            for entry in info['entries']:
+                if entry:
+                    playlist_items.append(f"https://www.youtube.com/watch?v={entry['id']}")
+                    print(entry['title'])
+            queued_songs.extend(playlist_items)
 
-            def check_response(msg):
-                return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
-            
-            try:
-                response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
-                if response_msg.content.lower() == 'yes':
-                    for entry in info['entries']:
-                        if entry:
-                            playlist_items.append(f"https://www.youtube.com/watch?v={entry['id']}")
-                    queued_songs.extend(playlist_items)
-
-                    await ctx.send(f"{len(info['entries'])} songs from the playlist have been added to the queue.")
-                else:
-                    # Add only the first song
-                    await ctx.send("Only first song from the playlist added to the queue.")
-                    queued_songs.append(f"https://www.youtube.com/watch?v={info['entries'][0]['id']}")
-            except asyncio.TimeoutError:
-                await ctx.send("You took too long to respond. Adding only the first song from the playlist to the queue.")
-                queued_songs.append(f"https://www.youtube.com/watch?v={info['entries'][0]['id']}")
+            await ctx.send(f"{len(info['entries'])} songs from the playlist have been added to the queue.")
 
         if voice_client.is_playing():
             await ctx.send("Song added to queue.")
@@ -299,6 +296,18 @@ async def extract_playlist_items(playlist_url, ctx, voice_client):
 # Command to skip the current song and play the next one in the queue
 @bot.command()
 async def skip(ctx):
+    voice_client = ctx.voice_client
+
+    if not voice_client or not voice_client.is_playing():
+        await ctx.send("There is no audio playing to skip.")
+        return
+
+    # Stop the currently playing audio
+    voice_client.stop()
+    await ctx.send("Skipping to next song.")
+
+@bot.command()
+async def next(ctx):
     voice_client = ctx.voice_client
 
     if not voice_client or not voice_client.is_playing():
@@ -330,6 +339,24 @@ async def leave(ctx):
 
 @bot.command()
 async def queue(ctx):
+    if queued_songs:
+        name_queue = []
+        count = 1
+        await ctx.send(f'The queue contains {len(queued_songs)}')
+        await ctx.send(f'Fetching data about the songs.')
+        for song in queued_songs:
+            with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+                info_dict = ydl.extract_info(song, download=False)
+                video_title = info_dict.get('title', None)
+                name_queue.append(f'{count}. {video_title}')
+            count = count+1
+        list_as_string = '\n'.join(name_queue)
+        await ctx.send(list_as_string)
+    else:
+        await ctx.send("The queue is empty!")
+
+@bot.command()
+async def songs(ctx):
     if queued_songs:
         name_queue = []
         count = 1
