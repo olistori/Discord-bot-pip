@@ -35,7 +35,7 @@ ydl_opts = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
-    'noplaylist': True  # Prevent downloading playlists
+    #'noplaylist': True  # Prevent downloading playlists
 }
 
 ffmpeg_options = {
@@ -204,6 +204,9 @@ async def play(ctx, *, query):
     voice_client = ctx.voice_client
     # Check if the provided query is a YouTube URL
     if "youtube.com" in query or "youtu.be" in query:
+        if "&list=" in query:  # Check if it's a playlist
+            await extract_playlist_items(query, ctx, voice_client)
+            return
         queued_songs.append(query)
         if voice_client.is_playing():
             await ctx.send("Song added to queue.")
@@ -236,6 +239,48 @@ async def play(ctx, *, query):
     else:
         await ctx.send("Song added to queue.")
 
+async def extract_playlist_items(playlist_url, ctx, voice_client):
+    playlist_items = []
+    try:
+        await ctx.send(f'This is a YouTube playlist. Downloading information needed.')
+        ydl_opts_playlist = {
+            #'quiet': True,
+            'skip_download': True,
+            'force_generic_extractor': True,
+            'dump_single_json': True,  # Dump info for each video in JSON format
+        }
+        ydl = youtube_dl.YoutubeDL(ydl_opts_playlist)
+        info = ydl.extract_info(playlist_url, download=False)
+        if 'entries' in info:
+            await ctx.send(f'This is a YouTube playlist. Do you want to add {len(info['entries'])} songs to the queue? (yes/no)')
+
+            def check_response(msg):
+                return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
+            
+            try:
+                response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
+                if response_msg.content.lower() == 'yes':
+                    for entry in info['entries']:
+                        if entry:
+                            playlist_items.append(f"https://www.youtube.com/watch?v={entry['id']}")
+                    queued_songs.extend(playlist_items)
+
+                    await ctx.send(f"{len(info['entries'])} songs from the playlist have been added to the queue.")
+                else:
+                    # Add only the first song
+                    await ctx.send("Only first song from the playlist added to the queue.")
+                    queued_songs.append(f"https://www.youtube.com/watch?v={info['entries'][0]['id']}")
+            except asyncio.TimeoutError:
+                await ctx.send("You took too long to respond. Adding only the first song from the playlist to the queue.")
+                queued_songs.append(f"https://www.youtube.com/watch?v={info['entries'][0]['id']}")
+
+        if voice_client.is_playing():
+            await ctx.send("Song added to queue.")
+        # If the bot is not currently playing, play the next song
+        if not ctx.voice_client.is_playing():
+            await play_next(ctx)
+    except Exception as e:
+        print(f"Error extracting playlist items: {e}")
 
 # Command to skip the current song and play the next one in the queue
 @bot.command()
@@ -270,6 +315,24 @@ async def leave(ctx):
         await ctx.voice_client.disconnect()
     else:
         await ctx.send("I'm not connected to a voice channel.")
+
+@bot.command()
+async def queue(ctx):
+    name_queue = []
+    count = 1
+    await ctx.send(f'Fetching data.')
+    for song in queued_songs:
+        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+            info_dict = ydl.extract_info(song, download=False)
+            video_title = info_dict.get('title', None)
+            name_queue.append(f'{count}. {video_title}')
+        count = count+1
+    list_as_string = '\n'.join(name_queue)
+    await ctx.send(list_as_string)
+
+
+
+
 
 
 
