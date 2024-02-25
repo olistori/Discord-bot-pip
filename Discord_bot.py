@@ -1,4 +1,3 @@
-open('error.log', 'w').close()
 import discord
 from discord.ext import commands
 from discord import Intents
@@ -12,6 +11,8 @@ import logging
 import sys
 import re
 from config import DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, YOUTUBE_API_KEY
+
+open('error.log', 'w').close()
 
 def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
     logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
@@ -206,6 +207,9 @@ async def play(ctx, *, query):
     # Check if the bot is already connected to a voice channel
     if ctx.voice_client is None:
         await join(ctx)
+
+    if ctx.author.voice is None:
+        return
 
     voice_client = ctx.voice_client
     # Check if the provided query is a YouTube URL
