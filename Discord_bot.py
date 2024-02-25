@@ -1,3 +1,4 @@
+open('error.log', 'w').close()
 import discord
 from discord.ext import commands
 from discord import Intents
@@ -7,7 +8,17 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import requests
 import asyncio
+import logging
+import sys
+import re
 from config import DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, YOUTUBE_API_KEY
+
+def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
+    logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+
+logging.basicConfig(filename='error.log', level=logging.ERROR)
+
+sys.excepthook = log_uncaught_exceptions
 
 # Define intents
 intents = discord.Intents.all()
@@ -16,6 +27,7 @@ intents.typing = False
 intents.presences = False
 intents.message_content = True
 intents.voice_states = True
+
 
 # Setup bot
 bot = commands.Bot(command_prefix='!', intents=intents)
@@ -60,6 +72,7 @@ async def search_youtube(ctx, query):
         data = response.json()
     except requests.RequestException as e:
         await ctx.send(f"Error occurred while searching YouTube: {str(e)}")
+        logging.error(f'Error occurred while searching YouTube: {str(e)}')
         return
 
     # Check if the response contains any items
@@ -91,7 +104,6 @@ async def search_youtube(ctx, query):
 
     # Append the selected YouTube URL to the queued_songs list
     selected_item = data['items'][selected_number - 1]
-    print(selected_item)
     track = []
     track.append(f'https://www.youtube.com/watch?v={selected_item['id']['videoId']}')
     track.append(selected_item['snippet']['title'])
@@ -117,25 +129,45 @@ async def play_next(ctx):
 
 
     # Check if the next song is a YouTube URL or a Spotify track ID
-    if "youtube.com" in next_song[0] or "youtu.be" in next_song[0]:
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(next_song[0], download=False)
-            # Filter formats to get audio-only formats
-            audio_formats = [f for f in info['formats'] if 'acodec' in f and f['acodec'] != 'none']
-            # Sort the formats by bitrate
-            sorted_audio_formats = sorted(audio_formats, key=lambda x: int(x.get('abr', 0) or 0), reverse=True)
-            # Get the URL of the highest bitrate audio stream
-            audio_url = sorted_audio_formats[0]['url'] if sorted_audio_formats else None
 
-            await ctx.send(f'Now playing: {next_song[1]}')
+    with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(next_song[0], download=False)
+        # Filter formats to get audio-only formats
+        audio_formats = [f for f in info['formats'] if 'acodec' in f and f['acodec'] != 'none']
+        # Sort the formats by bitrate
+        sorted_audio_formats = sorted(audio_formats, key=lambda x: int(x.get('abr', 0) or 0), reverse=True)
+        # Get the URL of the highest bitrate audio stream
+        audio_url = sorted_audio_formats[0]['url'] if sorted_audio_formats else None
 
-        await play_video(ctx, audio_url)
-    else:
-        await ctx.send(f'Now playing a preview of: {next_song[1]}')
-        await play_spotify(ctx, next_song[0])
+        await ctx.send(f'🎵 Now playing: {next_song[1]} 🎵')
 
-async def play_spotify(ctx, track_id):
-    await play_video(ctx, track_id)
+    await play_video(ctx, audio_url)
+
+async def play_spotify(ctx, query):
+    global queued_songs
+    url = f"https://www.googleapis.com/youtube/v3/search?key={YOUTUBE_API_KEY}&part=snippet&type=video&q={query}&maxResults=1"
+    
+    try:
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception for HTTP errors
+        data = response.json()
+    except requests.RequestException as e:
+        await ctx.send(f"Error occurred while searching YouTube: {str(e)}")
+        logging.error(f'Error occurred while searching YouTube: {str(e)}')
+        return
+
+    # Check if the response contains any items
+    if 'items' not in data:
+        await ctx.send("No search results found.")
+        logging.error(f'No search results found.')
+        return
+
+    # Append the selected YouTube URL to the queued_songs list
+    selected_item = data['items'][0]
+    track = []
+    track.append(f'https://www.youtube.com/watch?v={selected_item['id']['videoId']}')
+    track.append(selected_item['snippet']['title'])
+    queued_songs.append(track)
  
 
 @bot.command()
@@ -224,37 +256,40 @@ async def play(ctx, *, query):
 
     # Check if the provided query is a Spotify track URL
     if "open.spotify.com" in query:
-        track = spotify.track(query)
-        if 'preview_url' in track and track['preview_url'] is not None:
-            await ctx.send("This track is only a preview. Do you want to search the full song on Youtube? (yes/no)")
-            
-            def check_response(msg):
-                return msg.author == ctx.author and msg.channel == ctx.channel and msg.content.lower() in ['yes', 'no']
-            
+        await ctx.send("Spotify only allows previews. Instead ill look up the songs on youtube and play it for you!")
+        if "/playlist/" in query:
+
+            pattern = r'playlist\/([a-zA-Z0-9]+)'
+            match = re.search(pattern, query)
+            playlist_id = match.group(1)
             try:
-                response_msg = await bot.wait_for('message', timeout=30.0, check=check_response)
-                if response_msg.content.lower() == 'yes':
-                    # Play the full song
-                    await play(ctx, query=track['name'])
-                    return
-                else:
-                    await ctx.send(f'Okay, a preview of {track['name']} will be played.')
-                    # Play the preview
-                    trackls = []
-                    trackls.append(track['preview_url'])
-                    await ctx.send(f'{track['name']} - {track['artists'][0]['name']}')
-                    trackls.append(f'{track['name']} - {track['artists'][0]['name']}')
-                    queued_songs.append(trackls)
-            except asyncio.TimeoutError:
-                await ctx.send("You took too long to respond. Playing the preview.")
-                # Play the preview by default if no response is received
-                trackls = []
-                trackls.append(track['preview_url'])
-                trackls.append(f'{track['name']} - {track['artists']}')
-                queued_songs.append(trackls)
-        else:
-            await play(ctx, query=track['name'])
+                playlist = spotify.playlist_tracks(playlist_id)
+            except requests.RequestException as e:
+                await ctx.send(f'Error while getting playlist data: {str(e)}')
+                logging.error(f'Error while getting playlist data: {str(e)}')
+
+
+            counter = 0
+
+            for item in playlist['items']:
+                track = item['track']
+                track_data = (f'{track['name']} - {track['artists'][0]['name']}')
+                await play_spotify(ctx, track_data)
+
+                counter = counter + 1
+
+                if not ctx.voice_client.is_playing():
+                    await play_next(ctx)
+
+            await ctx.send(f'{counter} songs added to queue.')
             return
+
+
+        else:
+            track = spotify.track(query)
+
+            track_data = (f'{track['name']} - {track['artists'][0]['name']}')
+            await play_spotify(ctx, track_data)
 
         if voice_client.is_playing():
             await ctx.send("Song added to queue.")
@@ -312,6 +347,8 @@ async def extract_playlist_items(playlist_url, ctx, voice_client, max_dl):
 
     except Exception as e:
         print(f"Error extracting playlist items: {e}")
+        logging.error(f'Error extracting playlist items: {str(e)}')
+
 
 # Command to skip the current song and play the next one in the queue
 @bot.command()
@@ -390,6 +427,34 @@ async def songs(ctx):
         await ctx.send(list_as_string)
     else:
         await ctx.send("The queue is empty!")
+
+@bot.command()
+async def info(ctx):
+    # Create an embed with information about the available commands
+    embed = discord.Embed(title='Command List', description='List of available commands:', color=discord.Color.blue())
+
+    # Add commands and their descriptions
+    embed.add_field(name='!play', value='Plays youtube or adds to queue, input can be a link to youtube or spotify or just a word to search youtube!"', inline=False)
+    embed.add_field(name='!stop/!leave', value='Empties the queue and leaves the voice channel"', inline=False)
+    embed.add_field(name='!skip/!next', value='Skips to next song on the queue"', inline=False)
+    embed.add_field(name='!songs/!queue', value='Displays current playing song and lists out the queue"', inline=False)
+
+    # Send the embed as a direct message to the user who invoked the command
+    await ctx.author.send(embed=embed)
+
+    # Notify the user that the help message has been sent
+    await ctx.send('Help message sent! Check your DMs.')
+
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')
+
+@bot.event
+async def on_command_error(ctx, error):
+    if isinstance(error, commands.CommandNotFound):
+        await ctx.send('Command not found. Use "!info" to get list of the commands and what they do!')
+
 
 
 
