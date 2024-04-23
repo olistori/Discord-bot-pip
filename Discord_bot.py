@@ -185,7 +185,11 @@ async def join(ctx):
     # Join the voice channel of the author of the command
     if ctx.voice_client is None:
         channel = ctx.author.voice.channel
-        voice_client = await channel.connect()
+        print(channel)
+        try:
+            voice_client = await channel.connect()
+        except Exception as e:
+            print(f"An error occurred while connecting to the voice channel: {e}")
         return voice_client
     
 
@@ -203,7 +207,6 @@ async def play_video(ctx, video_url):
 
 @bot.command()
 async def play(ctx, *, query):
-    global queued_songs
     # Check if the bot is already connected to a voice channel
     if ctx.voice_client is None:
         await join(ctx)
