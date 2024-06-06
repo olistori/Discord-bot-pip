@@ -1,11 +1,13 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import Intents
 from discord import FFmpegPCMAudio
 import yt_dlp as youtube_dl
 import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 import requests
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
 import asyncio
 import logging
 import sys
@@ -20,6 +22,14 @@ def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
 logging.basicConfig(filename='error.log', level=logging.ERROR)
 
 sys.excepthook = log_uncaught_exceptions
+
+# Replace 'your-user-id' with your Discord user ID
+USER_ID = '159805503990530048'
+
+# URL of the League of Legends patch notes page
+PATCH_NOTES_URL = 'https://na.leagueoflegends.com/en-us/news/tags/patch-notes'
+
+latest_patch = None
 
 # Define intents
 intents = discord.Intents.all()
@@ -456,11 +466,68 @@ async def info(ctx):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
+    #await check_patch_notes()  # Run immediately when the bot starts
+    check_patch_notes.start()  # Start the background task
 
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         await ctx.send('Command not found. Use "!info" to get list of the commands and what they do!')
+
+@tasks.loop(hours=12)
+async def check_patch_notes():
+    global latest_patch
+    user = await bot.fetch_user(USER_ID)
+
+    try:
+        response = requests.get(PATCH_NOTES_URL)
+        response.raise_for_status()  # Check for request errors
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+
+
+
+        # Find the latest patch note link (modify the selector based on the website's structure)
+        latest_patch_element = soup.select_one('a[href*="/en-us/news/game-updates/patch-"]')
+
+        if latest_patch_element:
+            latest_patch_url = urljoin(PATCH_NOTES_URL, latest_patch_element['href'])
+
+            # Assuming the title is within a sibling or nearby element with the class "sc-4225abdc-0 lnNUuw"
+            latest_patch_title_element = latest_patch_element.find_next('div', class_='sc-4225abdc-0 lnNUuw')
+
+            # Fetch the page of the latest patch note to extract the image URL
+            patch_page_response = requests.get(latest_patch_url)
+            patch_page_response.raise_for_status()  # Check for request errors
+
+            patch_page_soup = BeautifulSoup(patch_page_response.text, 'html.parser')
+
+            # Find the image URL on the patch note page
+            image_element = patch_page_soup.find('div', class_='white-stone accent-before')
+            image_url = image_element.find('img')['src'] if image_element else None
+
+            # If the title element is found, get the text
+            if latest_patch_title_element:
+                latest_patch_title = latest_patch_title_element.get_text(strip=True)
+
+            # Check if this patch note is new
+            if latest_patch != latest_patch_url:
+                latest_patch = latest_patch_url
+
+                if image_url:
+                    #await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}\n Here is the patch highlight image: {image_url}')
+                        embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
+                          description=latest_patch_url,
+                          color=0x00ff00)
+                        embed.set_image(url=image_url)
+
+                        await user.send(embed=embed)
+                else:
+                    await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}')
+
+    except Exception as e:
+        print(f"Error checking patch notes: {e}")
+
 
 
 
