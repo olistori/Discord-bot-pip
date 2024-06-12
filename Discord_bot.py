@@ -8,6 +8,7 @@ from spotipy.oauth2 import SpotifyClientCredentials
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from datetime import datetime, timedelta, timezone
 import asyncio
 import logging
 import sys
@@ -24,7 +25,7 @@ logging.basicConfig(filename='error.log', level=logging.ERROR)
 sys.excepthook = log_uncaught_exceptions
 
 # Replace 'your-user-id' with your Discord user ID
-USER_ID = '159805503990530048'
+USER_ID = ['159805503990530048','224506084289675264']
 
 # URL of the League of Legends patch notes page
 PATCH_NOTES_URL = 'https://na.leagueoflegends.com/en-us/news/tags/patch-notes'
@@ -474,10 +475,10 @@ async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         await ctx.send('Command not found. Use "!info" to get list of the commands and what they do!')
 
-@tasks.loop(hours=12)
+@tasks.loop(hours=3)
 async def check_patch_notes():
     global latest_patch
-    user = await bot.fetch_user(USER_ID)
+    
 
     try:
         response = requests.get(PATCH_NOTES_URL)
@@ -493,37 +494,55 @@ async def check_patch_notes():
         if latest_patch_element:
             latest_patch_url = urljoin(PATCH_NOTES_URL, latest_patch_element['href'])
 
-            # Assuming the title is within a sibling or nearby element with the class "sc-4225abdc-0 lnNUuw"
-            latest_patch_title_element = latest_patch_element.find_next('div', class_='sc-4225abdc-0 lnNUuw')
-
-            # Fetch the page of the latest patch note to extract the image URL
-            patch_page_response = requests.get(latest_patch_url)
-            patch_page_response.raise_for_status()  # Check for request errors
-
-            patch_page_soup = BeautifulSoup(patch_page_response.text, 'html.parser')
-
-            # Find the image URL on the patch note page
-            image_element = patch_page_soup.find('div', class_='white-stone accent-before')
-            image_url = image_element.find('img')['src'] if image_element else None
-
-            # If the title element is found, get the text
-            if latest_patch_title_element:
-                latest_patch_title = latest_patch_title_element.get_text(strip=True)
-
-            # Check if this patch note is new
             if latest_patch != latest_patch_url:
                 latest_patch = latest_patch_url
+                
 
-                if image_url:
-                    #await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}\n Here is the patch highlight image: {image_url}')
+                # Assuming the title is within a sibling or nearby element with the class "sc-4225abdc-0 lnNUuw"
+                latest_patch_title_element = latest_patch_element.find_next('div', class_='sc-4225abdc-0 lnNUuw')
+
+                # Fetch the page of the latest patch note to extract the image URL
+                patch_page_response = requests.get(latest_patch_url)
+                patch_page_response.raise_for_status()  # Check for request errors
+
+                patch_page_soup = BeautifulSoup(patch_page_response.text, 'html.parser')
+
+                # Find the image URL on the patch note page
+                image_element = patch_page_soup.find('div', class_='white-stone accent-before')
+                image_url = image_element.find('img')['src'] if image_element else None
+
+                # If the title element is found, get the text
+                if latest_patch_title_element:
+                    latest_patch_title = latest_patch_title_element.get_text(strip=True)
+
+                date_element = patch_page_soup.find('time')
+                if date_element:
+                    pub_date = datetime.fromisoformat(date_element['datetime'].replace('Z', '+00:00'))
+
+                    # Check if the patch is less than or equal to 1 day old
+                    if datetime.now(timezone.utc) - pub_date > timedelta(days=1):
+                        print("Patch is older than 1 day, not sending message.")
+                        return
+
+
+                for id in USER_ID:
+
+                    user = await bot.fetch_user(id)
+
+                    if image_url:
+                        #await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}\n Here is the patch highlight image: {image_url}')
                         embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
                           description=latest_patch_url,
                           color=0x00ff00)
                         embed.set_image(url=image_url)
 
                         await user.send(embed=embed)
-                else:
-                    await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}')
+                    else:
+                        embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
+                          description=latest_patch_url,
+                          color=0x00ff00)
+
+                        await user.send(embed=embed)
 
     except Exception as e:
         print(f"Error checking patch notes: {e}")
