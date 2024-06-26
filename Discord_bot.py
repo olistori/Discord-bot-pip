@@ -26,9 +26,11 @@ sys.excepthook = log_uncaught_exceptions
 
 # Replace 'your-user-id' with your Discord user ID
 USER_ID = ['159805503990530048','224506084289675264']
+#USER_ID = ['159805503990530048']
+
 
 # URL of the League of Legends patch notes page
-PATCH_NOTES_URL = 'https://na.leagueoflegends.com/en-us/news/tags/patch-notes'
+PATCH_NOTES_URL = 'https://www.leagueoflegends.com/en-us/news/tags/patch-notes/'
 
 latest_patch = None
 
@@ -489,7 +491,7 @@ async def check_patch_notes():
 
 
         # Find the latest patch note link (modify the selector based on the website's structure)
-        latest_patch_element = soup.select_one('a[href*="/en-us/news/game-updates/patch-"]')
+        latest_patch_element = soup.select_one('a[href*="/en-us/news/game-updates/lol-patch-"]')
 
         if latest_patch_element:
             latest_patch_url = urljoin(PATCH_NOTES_URL, latest_patch_element['href'])
