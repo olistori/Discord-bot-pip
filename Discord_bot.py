@@ -20,7 +20,7 @@ open('error.log', 'w').close()
 def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
     logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
-logging.basicConfig(filename='error.log', level=logging.ERROR)
+logging.basicConfig(filename='error.log', level=logging.DEBUG)
 
 sys.excepthook = log_uncaught_exceptions
 
@@ -28,11 +28,16 @@ sys.excepthook = log_uncaught_exceptions
 USER_ID = ['159805503990530048','224506084289675264']
 #USER_ID = ['159805503990530048']
 
+CHANNEL_ID = ['1265617136341225517','1265619686939430943']
+
 
 # URL of the League of Legends patch notes page
-PATCH_NOTES_URL = 'https://www.leagueoflegends.com/en-us/news/tags/patch-notes/'
+PATCH_NOTES_URL_LOL = 'https://www.leagueoflegends.com/en-us/news/tags/patch-notes/'
 
-latest_patch = None
+PATCH_NOTES_URL_COD = 'https://www.callofduty.com/patchnotes'
+
+latest_patch_lol = None
+latest_patch_cod = None
 
 # Define intents
 intents = discord.Intents.all()
@@ -160,6 +165,8 @@ async def play_next(ctx):
 async def play_spotify(ctx, query):
     global queued_songs
     url = f"https://www.googleapis.com/youtube/v3/search?key={YOUTUBE_API_KEY}&part=snippet&type=video&q={query}&maxResults=1"
+
+    print(url)
     
     try:
         response = requests.get(url)
@@ -178,9 +185,11 @@ async def play_spotify(ctx, query):
 
     # Append the selected YouTube URL to the queued_songs list
     selected_item = data['items'][0]
+    print(selected_item)
     track = []
     track.append(f'https://www.youtube.com/watch?v={selected_item['id']['videoId']}')
     track.append(selected_item['snippet']['title'])
+    print(track)
     queued_songs.append(track)
  
 
@@ -198,7 +207,6 @@ async def join(ctx):
     # Join the voice channel of the author of the command
     if ctx.voice_client is None:
         channel = ctx.author.voice.channel
-        print(channel)
         try:
             voice_client = await channel.connect()
         except Exception as e:
@@ -279,13 +287,12 @@ async def play(ctx, *, query):
         await ctx.send("Spotify only allows previews. Instead ill look up the songs on youtube and play it for you!")
         if "/playlist/" in query:
 
-            pattern = r'playlist\/([a-zA-Z0-9]+)'
-            match = re.search(pattern, query)
-            playlist_id = match.group(1)
+            playlist_id = query.split("/")[-1].split("?")[0]
+            print(playlist_id)
             try:
                 playlist = spotify.playlist_tracks(playlist_id)
-            except requests.RequestException as e:
-                await ctx.send(f'Error while getting playlist data: {str(e)}')
+            except Exception as e:
+                print(f'Error while getting playlist data: {str(e)}')
                 logging.error(f'Error while getting playlist data: {str(e)}')
 
 
@@ -306,7 +313,14 @@ async def play(ctx, *, query):
 
 
         else:
-            track = spotify.track(query)
+            try:
+                track = spotify.track(query)
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                logging.error(f"An error occurred: {e}")
+                traceback.print_exc()
+
+            print(track)
 
             track_data = (f'{track['name']} - {track['artists'][0]['name']}')
             await play_spotify(ctx, track_data)
@@ -469,8 +483,8 @@ async def info(ctx):
 @bot.event
 async def on_ready():
     print(f'Logged in as {bot.user}')
-    #await check_patch_notes()  # Run immediately when the bot starts
-    check_patch_notes.start()  # Start the background task
+    check_patch_notes_lol.start()  # Start the background task
+    check_patch_notes_cod.start()
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -478,12 +492,15 @@ async def on_command_error(ctx, error):
         await ctx.send('Command not found. Use "!info" to get list of the commands and what they do!')
 
 @tasks.loop(hours=3)
-async def check_patch_notes():
-    global latest_patch
+async def check_patch_notes_lol():
+    global latest_patch_lol
     
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3' 
+    }
 
     try:
-        response = requests.get(PATCH_NOTES_URL)
+        response = requests.get(PATCH_NOTES_URL_LOL, headers=headers)
         response.raise_for_status()  # Check for request errors
 
         soup = BeautifulSoup(response.text, 'html.parser')
@@ -491,13 +508,13 @@ async def check_patch_notes():
 
 
         # Find the latest patch note link (modify the selector based on the website's structure)
-        latest_patch_element = soup.select_one('a[href*="/en-us/news/game-updates/lol-patch-"]')
+        latest_patch_element = soup.select_one('a[href*="/en-us/news/game-updates/patch-"]')
 
         if latest_patch_element:
-            latest_patch_url = urljoin(PATCH_NOTES_URL, latest_patch_element['href'])
+            latest_patch_url = urljoin(PATCH_NOTES_URL_LOL, latest_patch_element['href'])
 
-            if latest_patch != latest_patch_url:
-                latest_patch = latest_patch_url
+            if latest_patch_lol != latest_patch_url:
+                latest_patch_lol = latest_patch_url
                 
 
                 # Assuming the title is within a sibling or nearby element with the class "sc-4225abdc-0 lnNUuw"
@@ -523,7 +540,7 @@ async def check_patch_notes():
 
                     # Check if the patch is less than or equal to 1 day old
                     if datetime.now(timezone.utc) - pub_date > timedelta(days=1):
-                        print("Patch is older than 1 day, not sending message.")
+                        print("LOL Patch is older than 1 day, not sending message.")
                         return
 
 
@@ -546,11 +563,96 @@ async def check_patch_notes():
 
                         await user.send(embed=embed)
 
+                for id in CHANNEL_ID:
+
+                    channel = await bot.get_channel(id)
+
+                    if image_url:
+                        #await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}\n Here is the patch highlight image: {image_url}')
+                        embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
+                          description=latest_patch_url,
+                          color=0x00ff00)
+                        embed.set_image(url=image_url)
+
+                        await channel.send(embed=embed)
+                    else:
+                        embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
+                          description=latest_patch_url,
+                          color=0x00ff00)
+
+                        await channel.send(embed=embed)
+
     except Exception as e:
         print(f"Error checking patch notes: {e}")
+        logging.error(f"Error checking patch notes: {e}")
+
+
+@tasks.loop(hours=4)
+async def check_patch_notes_cod():
+    global latest_patch_cod
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3' 
+    }
+
+    try:
+        response = requests.get(PATCH_NOTES_URL_COD, headers=headers)
+        response.raise_for_status()  # Check for request errors
+
+        soup_cod = BeautifulSoup(response.text, 'html.parser')
+
+        # Find the latest patch note link (modify the selector based on the website's structure)
+        latest_patch_element_cod = soup_cod.select_one('a[href*="-warzone-"]')
+
+        if latest_patch_element_cod:
+            latest_patch_url_cod = urljoin(PATCH_NOTES_URL_COD, latest_patch_element_cod['href'])
+
+            patch_page_response = requests.get(latest_patch_url_cod, headers=headers)
+            patch_page_response.raise_for_status()  # Check for request errors
+
+            patch_page_soup_cod = BeautifulSoup(patch_page_response.text, 'html.parser')
+
+            new_patch_date = patch_page_soup_cod.find('p', class_='dateline')
+            new_patch_date = new_patch_date.get_text().strip()
+
+            if latest_patch_cod != new_patch_date:
+                latest_patch_cod = new_patch_date
+
+                date_format = "%B %d, %Y"
+                parsed_date = datetime.strptime(latest_patch_cod, date_format)
+
+                today_date = datetime.today()
+
+                if parsed_date.date() != today_date.date():
+                    print("COD Patch is older than 1 day, not sending message.")
+                    return
+
+                image_element_cod = patch_page_soup_cod.find('div', class_='article-image-container')
+                image_url_cod = image_element_cod.find('img')['src'] if image_element_cod else None
+
+                channel = bot.get_channel(1265617056007589938)
+
+                if image_url_cod:
+                    embed = discord.Embed(title=f'New patch notes released: {latest_patch_cod}',
+                      description=latest_patch_url_cod,
+                      color=0x00ff00)
+                    embed.set_image(url=image_url_cod)
+
+                    await channel.send(embed=embed)
+
+                else:
+                    embed = discord.Embed(title=f'New patch notes released: {latest_patch_title_cod}',
+                      description=latest_patch_url_cod,
+                      color=0x00ff00)
+
+                    await channel.send(embed=embed)
 
 
 
 
+
+    except Exception as e:
+        print(f"Error checking patch notes: {e}")
+        logging.error(f"Error checking patch notes: {e}")
 
 bot.run(DISCORD_TOKEN)
