@@ -9,18 +9,21 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timedelta, timezone
+import urllib.parse
 import asyncio
 import logging
+import traceback
 import sys
 import re
 from config import DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, YOUTUBE_API_KEY
 
 open('error.log', 'w').close()
 
+logging.basicConfig(filename='error.log', level=logging.ERROR, 
+                    format='%(asctime)s - %(levelname)s - %(message)s')
+
 def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
     logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
-
-logging.basicConfig(filename='error.log', level=logging.DEBUG)
 
 sys.excepthook = log_uncaught_exceptions
 
@@ -28,7 +31,7 @@ sys.excepthook = log_uncaught_exceptions
 USER_ID = ['159805503990530048','224506084289675264']
 #USER_ID = ['159805503990530048']
 
-CHANNEL_ID = ['1265617136341225517','1265619686939430943']
+CHANNEL_ID = [1265617136341225517,1265619686939430943]
 
 
 # URL of the League of Legends patch notes page
@@ -51,13 +54,13 @@ intents.voice_states = True
 # Setup bot
 bot = commands.Bot(command_prefix='!', intents=intents)
 
-# Connect to Spotify
-spotify = spotipy.Spotify(
-    client_credentials_manager=SpotifyClientCredentials(
-        client_id=SPOTIFY_CLIENT_ID, 
-        client_secret=SPOTIFY_CLIENT_SECRET
-    )
+client_credentials_manager = SpotifyClientCredentials(
+    client_id=SPOTIFY_CLIENT_ID, 
+    client_secret=SPOTIFY_CLIENT_SECRET
 )
+
+# Connect to Spotify
+spotify = spotipy.Spotify(client_credentials_manager=client_credentials_manager)
 
 ydl_opts = {
     'format': 'bestaudio/best',
@@ -90,8 +93,10 @@ async def search_youtube(ctx, query):
         response.raise_for_status()  # Raise an exception for HTTP errors
         data = response.json()
     except requests.RequestException as e:
-        await ctx.send(f"Error occurred while searching YouTube: {str(e)}")
+        await ctx.send(f"Error occurred while searching YouTube")
+        logging.error("An error occurred", exc_info=True)
         logging.error(f'Error occurred while searching YouTube: {str(e)}')
+        print(f'Error occurred while searching YouTube: {str(e)}')
         return
 
     # Check if the response contains any items
@@ -173,14 +178,15 @@ async def play_spotify(ctx, query):
         response.raise_for_status()  # Raise an exception for HTTP errors
         data = response.json()
     except requests.RequestException as e:
-        await ctx.send(f"Error occurred while searching YouTube: {str(e)}")
+        await ctx.send(f"Error occurred while searching")
+        logging.error("An error occurred", exc_info=True)
         logging.error(f'Error occurred while searching YouTube: {str(e)}')
+        print(f'Error occurred while searching YouTube: {str(e)}')
         return
 
     # Check if the response contains any items
     if 'items' not in data:
         await ctx.send("No search results found.")
-        logging.error(f'No search results found.')
         return
 
     # Append the selected YouTube URL to the queued_songs list
@@ -293,8 +299,10 @@ async def play(ctx, *, query):
                 playlist = spotify.playlist_tracks(playlist_id)
             except Exception as e:
                 print(f'Error while getting playlist data: {str(e)}')
+                logging.error("An error occurred", exc_info=True)
                 logging.error(f'Error while getting playlist data: {str(e)}')
 
+            await ctx.send("This is a spotify playlist, adding maximum 30 songs!")
 
             counter = 0
 
@@ -308,6 +316,9 @@ async def play(ctx, *, query):
                 if not ctx.voice_client.is_playing():
                     await play_next(ctx)
 
+                if counter >= 30:
+                    break
+
             await ctx.send(f'{counter} songs added to queue.')
             return
 
@@ -317,10 +328,8 @@ async def play(ctx, *, query):
                 track = spotify.track(query)
             except Exception as e:
                 print(f"An error occurred: {e}")
+                logging.error("An error occurred", exc_info=True)
                 logging.error(f"An error occurred: {e}")
-                traceback.print_exc()
-
-            print(track)
 
             track_data = (f'{track['name']} - {track['artists'][0]['name']}')
             await play_spotify(ctx, track_data)
@@ -381,6 +390,7 @@ async def extract_playlist_items(playlist_url, ctx, voice_client, max_dl):
 
     except Exception as e:
         print(f"Error extracting playlist items: {e}")
+        logging.error("An error occurred", exc_info=True)
         logging.error(f'Error extracting playlist items: {str(e)}')
 
 
@@ -394,8 +404,9 @@ async def skip(ctx):
         return
 
     # Stop the currently playing audio
-    voice_client.stop()
     await ctx.send("Skipping to next song.")
+    voice_client.stop()
+    
 
 @bot.command()
 async def next(ctx):
@@ -406,8 +417,9 @@ async def next(ctx):
         return
 
     # Stop the currently playing audio
-    voice_client.stop()
     await ctx.send("Skipping to next song.")
+    voice_client.stop()
+    
 
 
 # Command to stop playback and clear queue
@@ -527,8 +539,14 @@ async def check_patch_notes_lol():
                 patch_page_soup = BeautifulSoup(patch_page_response.text, 'html.parser')
 
                 # Find the image URL on the patch note page
+
                 image_element = patch_page_soup.find('div', class_='white-stone accent-before')
-                image_url = image_element.find('img')['src'] if image_element else None
+                if image_element:
+                    image_tag = image_element.find('img')
+                    image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else None
+                else:
+                    image_url = None
+
 
                 # If the title element is found, get the text
                 if latest_patch_title_element:
@@ -549,7 +567,6 @@ async def check_patch_notes_lol():
                     user = await bot.fetch_user(id)
 
                     if image_url:
-                        #await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}\n Here is the patch highlight image: {image_url}')
                         embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
                           description=latest_patch_url,
                           color=0x00ff00)
@@ -563,12 +580,11 @@ async def check_patch_notes_lol():
 
                         await user.send(embed=embed)
 
-                for id in CHANNEL_ID:
+                for idc in CHANNEL_ID:
 
-                    channel = await bot.get_channel(id)
+                    channel = bot.get_channel(idc)
 
                     if image_url:
-                        #await user.send(f'New patch notes released: {latest_patch_title}\n {latest_patch_url}\n Here is the patch highlight image: {image_url}')
                         embed = discord.Embed(title=f'New patch notes released: {latest_patch_title}',
                           description=latest_patch_url,
                           color=0x00ff00)
@@ -584,6 +600,7 @@ async def check_patch_notes_lol():
 
     except Exception as e:
         print(f"Error checking patch notes: {e}")
+        logging.error("An error occurred", exc_info=True)
         logging.error(f"Error checking patch notes: {e}")
 
 
@@ -627,8 +644,13 @@ async def check_patch_notes_cod():
                     print("COD Patch is older than 1 day, not sending message.")
                     return
 
-                image_element_cod = patch_page_soup_cod.find('div', class_='article-image-container')
-                image_url_cod = image_element_cod.find('img')['src'] if image_element_cod else None
+                image_element_cod = patch_page_soup_cod.find('div', class_='article-image-container img-lazy-container')
+                if image_element_cod:
+                    image_tag = image_element_cod.find('img')
+                    image_url_cod = image_tag['src'] if image_tag and 'src' in image_tag.attrs else None
+                else:
+                    image_url_cod = None
+
 
                 channel = bot.get_channel(1265617056007589938)
 
@@ -641,18 +663,16 @@ async def check_patch_notes_cod():
                     await channel.send(embed=embed)
 
                 else:
-                    embed = discord.Embed(title=f'New patch notes released: {latest_patch_title_cod}',
+                    embed = discord.Embed(title=f'New patch notes released: {latest_patch_cod}',
                       description=latest_patch_url_cod,
                       color=0x00ff00)
 
                     await channel.send(embed=embed)
 
 
-
-
-
     except Exception as e:
         print(f"Error checking patch notes: {e}")
+        logging.error("An error occurred", exc_info=True)
         logging.error(f"Error checking patch notes: {e}")
 
 bot.run(DISCORD_TOKEN)
