@@ -9,6 +9,12 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime, timedelta, timezone
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from webdriver_manager.chrome import ChromeDriverManager
+import time
 import urllib.parse
 import asyncio
 import logging
@@ -26,6 +32,9 @@ def log_uncaught_exceptions(exc_type, exc_value, exc_traceback):
     logging.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
 
 sys.excepthook = log_uncaught_exceptions
+
+monitor_settings = {}
+
 
 # Replace 'your-user-id' with your Discord user ID
 USER_ID = ['159805503990530048','224506084289675264']
@@ -69,7 +78,8 @@ ydl_opts = {
         'preferredcodec': 'mp3',
         'preferredquality': '192',
     }],
-    'noplaylist': True  # Prevent downloading playlists
+    'noplaylist': True,  # Prevent downloading playlists
+    'cookies_from_browser': ('chrome',)  # Change to 'firefox' if using Firefox
 }
 
 ffmpeg_options = {
@@ -493,12 +503,6 @@ async def info(ctx):
 
 
 @bot.event
-async def on_ready():
-    print(f'Logged in as {bot.user}')
-    check_patch_notes_lol.start()  # Start the background task
-    check_patch_notes_cod.start()
-
-@bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CommandNotFound):
         await ctx.send('Command not found. Use "!info" to get list of the commands and what they do!')
@@ -674,5 +678,207 @@ async def check_patch_notes_cod():
         print(f"Error checking patch notes: {e}")
         logging.error("An error occurred", exc_info=True)
         logging.error(f"Error checking patch notes: {e}")
+
+
+def setup_driver():
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    options.add_argument("--window-size=1920,1080")
+    return webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+
+@bot.command(name="monitorteetimes")
+async def start_monitor(ctx):
+    if not isinstance(ctx.channel, discord.DMChannel):
+        await ctx.send("Please run this command in a private message (DM).")
+        return
+
+    def check_author(m):
+        return m.author == ctx.author and isinstance(m.channel, discord.DMChannel)
+
+    await ctx.send("Select day: 0 = today, 1 = tomorrow, 2 = day after")
+    try:
+        msg = await bot.wait_for("message", timeout=60.0, check=check_author)
+        day = int(msg.content)
+    except:
+        return await ctx.send("No response or invalid input. Monitoring cancelled.")
+
+    await ctx.send(f"Gathering data please wait...")
+
+    # Fetch courses for selected day
+    url = f"https://rastimar.golf.is/?day={day}"
+    driver = setup_driver()
+    driver.get(url)
+    time.sleep(5)
+    cards = driver.find_elements(By.CSS_SELECTOR, "div.card.relative.h-fit")
+    course_names = sorted(set(card.find_element(By.TAG_NAME, "img").get_attribute("alt").strip() for card in cards))
+    driver.quit()
+
+    if not course_names:
+        return await ctx.send("No courses found for that day.")
+
+    await ctx.send("Select course:\n" + "\n".join(f"{i}: {name}" for i, name in enumerate(course_names)))
+    try:
+        msg = await bot.wait_for("message", timeout=60.0, check=check_author)
+        selected_course = course_names[int(msg.content)]
+    except:
+        return await ctx.send("Invalid course. Monitoring cancelled.")
+
+    await ctx.send("Enter minimum number of players (1–4):")
+    try:
+        msg = await bot.wait_for("message", timeout=60.0, check=check_author)
+        min_players = int(msg.content)
+    except:
+        return await ctx.send("Invalid number. Monitoring cancelled.")
+
+    await ctx.send("Enter time to monitor:\n"
+                   "- Single hour (e.g. 18)\n"
+                   "- Hour range (e.g. 18-21)\n"
+                   "- Exact time (e.g. 18:35):")
+    msg = await bot.wait_for("message", timeout=60.0, check=check_author)
+    input_str = msg.content.strip()
+
+    exact_time = None
+    start_hour = None
+    end_hour = None
+
+    try:
+        if ":" in input_str:
+            # Exact time mode
+            hour, minute = map(int, input_str.split(":"))
+            if 0 <= hour <= 23 and 0 <= minute <= 59:
+                exact_time = f"{hour:02d}:{minute:02d}"
+            else:
+                raise ValueError
+        elif "-" in input_str:
+            # Hour range mode
+            start_hour, end_hour = map(int, input_str.split("-"))
+            if not (0 <= start_hour <= 23 and 0 <= end_hour <= 23 and start_hour <= end_hour):
+                raise ValueError
+        else:
+            # Single hour mode
+            hour = int(input_str)
+            if not (0 <= hour <= 23):
+                raise ValueError
+            start_hour = hour
+            end_hour = hour
+    except ValueError:
+        return await ctx.send("Invalid time format. Monitoring cancelled.")
+
+    monitor_settings[ctx.author.id] = {
+        "user": ctx.author,
+        "day": day,
+        "course": selected_course,
+        "min_players": min_players,
+        "start_hour": start_hour,
+        "end_hour": end_hour,
+        "exact_time": exact_time,
+        "check_count": 0,
+        "notified_times": set()
+    }
+
+    if exact_time:
+        await ctx.send(f"Monitoring started for {selected_course} at {exact_time} ({min_players}+ players).")
+    else:
+        await ctx.send(f"Monitoring started for {selected_course} ({start_hour}:00–{end_hour}:59, {min_players}+ players).")
+
+
+    await check_tee_times()
+
+
+
+@bot.command(name="stopmonitorteetimes")
+async def stop_monitor(ctx):
+    if ctx.author.id in monitor_settings:
+        del monitor_settings[ctx.author.id]
+        await ctx.send("Monitoring stopped.")
+    else:
+        await ctx.send("No active monitoring session found.")
+
+
+@tasks.loop(minutes=5)
+async def monitor_tee_times():
+    await check_tee_times()
+
+async def check_tee_times():
+    if not monitor_settings:
+        return  # don't waste time if no one is monitoring
+
+    MAX_CHECKS = 96  # e.g. 12 * 5 min = 1 hour
+    for user_id, settings in list(monitor_settings.items()):
+        current_available = set()
+        try:
+            url = f"https://rastimar.golf.is/?day={settings['day']}"
+            driver = setup_driver()
+            driver.get(url)
+            time.sleep(5)
+            cards = driver.find_elements(By.CSS_SELECTOR, "div.card.relative.h-fit")
+
+            for card in cards:
+                course = card.find_element(By.TAG_NAME, "img").get_attribute("alt").strip()
+                if course != settings["course"]:
+                    continue
+
+                slots = card.find_elements(By.CSS_SELECTOR, "div.relative.border.rounded-lg")
+                for slot in slots:
+                    cls = slot.get_attribute("class")
+                    if "bg-green-200" in cls:
+                        spots = 3
+                    elif "bg-yellow-200" in cls:
+                        spots = 2
+                    elif "bg-red-200" in cls:
+                        spots = 1
+                    elif "bg-white" in cls:
+                        spots = 4
+                    else:
+                        continue
+
+                    if spots < settings["min_players"]:
+                        continue
+
+                    try:
+                        time_str = slot.find_element(By.CLASS_NAME, "font-bold").text.strip()
+
+                        if settings["exact_time"]:
+                            if time_str != settings["exact_time"]:
+                                continue
+                        else:
+                            hour = int(time_str.split(":")[0])
+                            if not (settings["start_hour"] <= hour <= settings["end_hour"]):
+                                continue
+
+                        key = f"{course}_{time_str}"
+                        if key not in settings["notified_times"]:
+                            await settings["user"].send(f"New tee time: {course} — {time_str} ({spots} spots)")
+                            settings["notified_times"].add(key)
+
+                        current_available.add(key)
+
+                    except:
+                        continue
+
+            # Remove stale tee times that disappeared
+            settings["notified_times"] &= current_available
+
+            driver.quit()
+
+        except Exception as e:
+            print(f"Monitor error for user {user_id}: {e}")
+
+        settings["check_count"] += 1
+        if settings["check_count"] >= MAX_CHECKS:
+            await settings["user"].send(f"Monitoring stopped after {MAX_CHECKS} checks.")
+            del monitor_settings[user_id]
+            continue
+
+
+
+@bot.event
+async def on_ready():
+    print(f'Logged in as {bot.user}')
+    check_patch_notes_lol.start()  # Start the background task
+    check_patch_notes_cod.start()
+    monitor_tee_times.start()
 
 bot.run(DISCORD_TOKEN)
