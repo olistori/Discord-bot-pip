@@ -7,6 +7,7 @@ __pycache__/
 *.so
 
 config.py
+*.bat
 
 # Distribution / packaging
 .Python
